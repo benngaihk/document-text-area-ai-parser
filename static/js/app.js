@@ -1,6 +1,9 @@
 // 全局变量
 let currentFileId = null;
 let currentFields = [];
+let currentPage = 1;
+let totalPages = 1;
+let allPagesData = {};  // 存储所有页面的表单数据
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function() {
@@ -22,6 +25,8 @@ function bindEventListeners() {
     const uploadArea = document.getElementById('uploadArea');
     const submitForm = document.getElementById('submitForm');
     const downloadBtn = document.getElementById('downloadBtn');
+    const prevPageBtn = document.getElementById('prevPageBtn');
+    const nextPageBtn = document.getElementById('nextPageBtn');
 
     // 文件输入变化事件
     fileInput.addEventListener('change', handleFileSelect);
@@ -37,6 +42,10 @@ function bindEventListeners() {
 
     // 下载按钮事件
     downloadBtn.addEventListener('click', handleDownload);
+
+    // 翻页按钮事件
+    prevPageBtn.addEventListener('click', handlePrevPage);
+    nextPageBtn.addEventListener('click', handleNextPage);
 }
 
 // 处理文件选择
@@ -116,9 +125,12 @@ async function uploadFile(file) {
 
         const parseResult = await parseResponse.json();
         currentFields = parseResult.fields;
+        currentPage = parseResult.current_page || 1;
+        totalPages = parseResult.total_pages || 1;
 
         console.log('解析结果:', parseResult);
         console.log('字段数量:', currentFields.length);
+        console.log('当前页:', currentPage, '总页数:', totalPages);
 
         hideLoading();
         hideUploadProgress();
@@ -131,6 +143,8 @@ async function uploadFile(file) {
         } else {
             console.log('有字段，显示表单页面');
             showFormSection();
+            updatePageIndicator();
+            updatePaginationButtons();
             generateFormFields();
             updateStepStatus(1, 'completed');
             updateStepStatus(2, 'active');
@@ -240,14 +254,16 @@ async function handleFormSubmit() {
     }
 
     try {
-        // 收集表单数据
-        const formData = collectFormData();
+        // 保存当前页的数据
+        saveCurrentPageData();
 
-        // 验证必填字段
-        if (!validateRequiredFields(formData)) {
-            showError('请填写所有必填字段');
-            return;
+        // 合并所有页面的数据
+        const formData = {};
+        for (let page in allPagesData) {
+            Object.assign(formData, allPagesData[page]);
         }
+
+        console.log('提交所有页面的数据:', formData);
 
         // 提交数据
         showLoading('正在生成PDF...');
@@ -417,6 +433,9 @@ function updateStepStatus(stepNumber, status) {
 function resetForm() {
     currentFileId = null;
     currentFields = [];
+    currentPage = 1;
+    totalPages = 1;
+    allPagesData = {};
 
     // 重置文件输入
     document.getElementById('fileInput').value = '';
@@ -518,3 +537,137 @@ function forceCloseLoading() {
 
 // 将函数暴露到全局作用域，方便调试
 window.forceCloseLoading = forceCloseLoading;
+
+// 翻页相关函数
+
+// 处理上一页
+async function handlePrevPage() {
+    if (currentPage <= 1) return;
+
+    // 保存当前页的数据
+    saveCurrentPageData();
+
+    // 加载上一页
+    await loadPage(currentPage - 1);
+}
+
+// 处理下一页
+async function handleNextPage() {
+    if (currentPage >= totalPages) return;
+
+    // 保存当前页的数据
+    saveCurrentPageData();
+
+    // 加载下一页
+    await loadPage(currentPage + 1);
+}
+
+// 保存当前页的表单数据
+function saveCurrentPageData() {
+    const pageData = {};
+
+    currentFields.forEach((field, index) => {
+        const input = document.getElementById(`field_${index}`);
+        if (input && input.value.trim()) {
+            pageData[field.name] = input.value.trim();
+        }
+    });
+
+    allPagesData[currentPage] = pageData;
+    console.log(`保存第 ${currentPage} 页数据:`, pageData);
+}
+
+// 加载指定页面
+async function loadPage(pageNum) {
+    if (!currentFileId) return;
+
+    try {
+        showLoading(`正在加载第 ${pageNum} 页...`);
+
+        const parseResponse = await fetch('/parse-pdf-by-id', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                file_id: currentFileId,
+                page_num: pageNum
+            })
+        });
+
+        if (!parseResponse.ok) {
+            const errorData = await parseResponse.json();
+            throw new Error(errorData.detail || '解析失败');
+        }
+
+        const parseResult = await parseResponse.json();
+        currentFields = parseResult.fields;
+        currentPage = parseResult.current_page || pageNum;
+        totalPages = parseResult.total_pages || totalPages;
+
+        console.log(`加载第 ${currentPage} 页，共 ${totalPages} 页`);
+        console.log('字段数量:', currentFields.length);
+
+        hideLoading();
+
+        // 更新UI
+        updatePageIndicator();
+        updatePaginationButtons();
+        generateFormFields();
+
+        // 恢复该页之前填写的数据
+        restorePageData(currentPage);
+
+    } catch (error) {
+        hideLoading();
+        showError(error.message);
+        console.error('加载页面错误:', error);
+    }
+}
+
+// 恢复页面数据
+function restorePageData(pageNum) {
+    if (!allPagesData[pageNum]) return;
+
+    const pageData = allPagesData[pageNum];
+    console.log(`恢复第 ${pageNum} 页数据:`, pageData);
+
+    currentFields.forEach((field, index) => {
+        const input = document.getElementById(`field_${index}`);
+        if (input && pageData[field.name]) {
+            input.value = pageData[field.name];
+        }
+    });
+}
+
+// 更新页面指示器
+function updatePageIndicator() {
+    const indicator = document.getElementById('pageIndicator');
+    if (indicator) {
+        indicator.textContent = `第 ${currentPage} 页，共 ${totalPages} 页`;
+    }
+}
+
+// 更新翻页按钮状态
+function updatePaginationButtons() {
+    const prevBtn = document.getElementById('prevPageBtn');
+    const nextBtn = document.getElementById('nextPageBtn');
+
+    if (prevBtn) {
+        prevBtn.disabled = currentPage <= 1;
+    }
+
+    if (nextBtn) {
+        nextBtn.disabled = currentPage >= totalPages;
+    }
+
+    // 如果只有一页，隐藏翻页控件
+    const paginationControls = document.getElementById('paginationControls');
+    if (paginationControls) {
+        if (totalPages <= 1) {
+            paginationControls.classList.add('d-none');
+        } else {
+            paginationControls.classList.remove('d-none');
+        }
+    }
+}

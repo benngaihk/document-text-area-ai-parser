@@ -224,16 +224,16 @@ async def upload_pdf(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
 
 
-@app.post("/parse-pdf-by-id", summary="根据文件ID解析PDF")
-async def parse_pdf_by_id(request: dict):
+@app.post("/get-pdf-info", summary="获取PDF信息")
+async def get_pdf_info(request: dict):
     """
-    根据文件ID解析PDF表单字段，使用阿里云视觉识别
+    获取PDF基本信息（总页数等）
 
     Args:
         request: {"file_id": "..."}
 
     Returns:
-        {"fields": [...]}
+        {"total_pages": ..., "file_name": "..."}
     """
     try:
         file_id = request.get("file_id")
@@ -245,11 +245,66 @@ async def parse_pdf_by_id(request: dict):
         if not file_path:
             raise HTTPException(status_code=404, detail="文件不存在或已过期")
 
+        # 获取PDF页数
+        import fitz
+        doc = fitz.open(file_path)
+        total_pages = len(doc)
+        doc.close()
+
+        # 获取文件信息
+        file_info = temp_manager.get_file_info(file_id)
+        file_name = file_info.get('original_name', 'document.pdf') if file_info else 'document.pdf'
+
+        return {
+            "success": True,
+            "total_pages": total_pages,
+            "file_name": file_name
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取信息失败: {str(e)}")
+
+
+@app.post("/parse-pdf-by-id", summary="根据文件ID解析PDF")
+async def parse_pdf_by_id(request: dict):
+    """
+    根据文件ID解析PDF表单字段，使用阿里云视觉识别
+
+    Args:
+        request: {"file_id": "...", "page_num": 1}  # page_num从1开始
+
+    Returns:
+        {"fields": [...], "current_page": ..., "total_pages": ...}
+    """
+    try:
+        file_id = request.get("file_id")
+        page_num = request.get("page_num", 1)  # 默认第1页
+
+        if not file_id:
+            raise HTTPException(status_code=400, detail="缺少file_id参数")
+
+        # 获取文件路径
+        file_path = temp_manager.get_file_path(file_id)
+        if not file_path:
+            raise HTTPException(status_code=404, detail="文件不存在或已过期")
+
+        # 获取总页数
+        import fitz
+        doc = fitz.open(file_path)
+        total_pages = len(doc)
+        doc.close()
+
+        # 验证页码
+        if page_num < 1 or page_num > total_pages:
+            raise HTTPException(status_code=400, detail=f"页码超出范围（1-{total_pages}）")
+
         # 使用PDF字段提取器
         extractor = PDFFieldExtractor(file_path, output_dir=str(TEMP_DIR / file_id))
 
-        # 处理PDF（第2页，page_num=1）
-        results = extractor.process(page_num=1, use_vision=True)
+        # 处理PDF（page_num从1开始，转换为从0开始的索引）
+        results = extractor.process(page_num=page_num - 1, use_vision=True)
 
         # 读取简化格式的字段数据
         simplified_file = Path(results['simplified_file'])
@@ -284,7 +339,11 @@ async def parse_pdf_by_id(request: dict):
                 "required": False  # 默认非必填
             })
 
-        return {"fields": fields}
+        return {
+            "fields": fields,
+            "current_page": page_num,
+            "total_pages": total_pages
+        }
 
     except HTTPException:
         raise
